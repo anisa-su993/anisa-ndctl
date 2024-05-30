@@ -327,4 +327,9 @@ global:
 	cxl_memdev_get_dynamic_ram_1_qos_class;
 	cxl_decoder_is_dynamic_ram_1_capable;
 	cxl_decoder_create_dynamic_ram_1_region;
+	cxl_extent_get_first;
+	cxl_extent_get_next;
+	cxl_extent_get_offset;
+	cxl_extent_get_length;
+	cxl_extent_get_uuid;
 } LIBCXL_12;
