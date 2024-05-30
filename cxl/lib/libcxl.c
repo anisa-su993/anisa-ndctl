@@ -110,10 +110,15 @@ static void free_target(struct cxl_target *target, struct list_head *head)
 static void free_region(struct cxl_region *region, struct list_head *head)
 {
 	struct cxl_memdev_mapping *mapping, *_m;
+	struct cxl_region_extent *extent, *_e;
 
 	list_for_each_safe(&region->mappings, mapping, _m, list) {
 		list_del_from(&region->mappings, &mapping->list);
 		free(mapping);
+	}
+	list_for_each_safe(&region->extents, extent, _e, list) {
+		list_del_from(&region->extents, &extent->list);
+		free(extent);
 	}
 	if (head)
 		list_del_from(head, &region->list);
@@ -635,6 +640,7 @@ static void *add_cxl_region(void *parent, int id, const char *cxlregion_base)
 	region->ctx = ctx;
 	region->decoder = decoder;
 	list_head_init(&region->mappings);
+	list_head_init(&region->extents);
 
 	region->dev_path = strdup(cxlregion_base);
 	if (!region->dev_path)
@@ -1255,6 +1261,196 @@ cxl_mapping_get_next(struct cxl_memdev_mapping *mapping)
 	struct cxl_region *region = mapping->region;
 
 	return list_next(&region->mappings, mapping, list);
+}
+
+/* Read the extentX.Y entries of one tag_groupX.Y or untagged directory */
+static void cxl_extents_add_group(struct cxl_region *region,
+				  const char *group_path)
+{
+	const char *devname = cxl_region_get_devname(region);
+	struct cxl_ctx *ctx = cxl_region_get_ctx(region);
+	char buf[SYSFS_ATTR_SIZE];
+	struct dirent *de;
+	char *extent_path;
+	uuid_t uuid;
+	DIR *dir;
+
+	extent_path = calloc(1, strlen(group_path) + 64);
+	if (!extent_path) {
+		err(ctx, "%s: allocation failure\n", devname);
+		return;
+	}
+
+	/* The directory's uuid is the tag of every extent in it */
+	sprintf(extent_path, "%s/uuid", group_path);
+	if (sysfs_read_attr(ctx, extent_path, buf) < 0 ||
+	    uuid_parse(buf, uuid) < 0) {
+		err(ctx, "%s: failed to read %s\n", devname, extent_path);
+		free(extent_path);
+		return;
+	}
+
+	dir = opendir(group_path);
+	if (!dir) {
+		err(ctx, "%s: failed to open %s: %s\n", devname, group_path,
+		    strerror(errno));
+		free(extent_path);
+		return;
+	}
+
+	while ((de = readdir(dir)) != NULL) {
+		struct cxl_region_extent *extent;
+		u64 offset, length;
+		int id, region_id;
+
+		if (sscanf(de->d_name, "extent%d.%d", &region_id, &id) != 2)
+			continue;
+
+		sprintf(extent_path, "%s/%s/offset", group_path, de->d_name);
+		if (sysfs_read_attr(ctx, extent_path, buf) < 0) {
+			err(ctx, "%s: failed to read %s/offset\n",
+			    devname, de->d_name);
+			continue;
+		}
+
+		offset = strtoull(buf, NULL, 0);
+		if (offset == ULLONG_MAX) {
+			err(ctx, "%s %s: failed to read offset\n",
+			    devname, de->d_name);
+			continue;
+		}
+
+		sprintf(extent_path, "%s/%s/length", group_path, de->d_name);
+		if (sysfs_read_attr(ctx, extent_path, buf) < 0) {
+			err(ctx, "%s: failed to read %s/length\n",
+			    devname, de->d_name);
+			continue;
+		}
+
+		length = strtoull(buf, NULL, 0);
+		if (length == ULLONG_MAX) {
+			err(ctx, "%s %s: failed to read length\n",
+			    devname, de->d_name);
+			continue;
+		}
+
+		extent = calloc(1, sizeof(*extent));
+		if (!extent) {
+			err(ctx, "%s %s: allocation failure\n",
+			    devname, de->d_name);
+			continue;
+		}
+		uuid_copy(extent->uuid, uuid);
+		extent->region = region;
+		extent->offset = offset;
+		extent->length = length;
+
+		/* Only extents of a sharable partition carry a sequence */
+		extent->shared_extent_seq = -1;
+		sprintf(extent_path, "%s/%s/shared_extent_seq", group_path,
+			de->d_name);
+		if (sysfs_read_attr(ctx, extent_path, buf) == 0)
+			extent->shared_extent_seq = strtol(buf, NULL, 0);
+
+		list_node_init(&extent->list);
+		list_add(&region->extents, &extent->list);
+		dbg(ctx, "%s added %s\n", devname, de->d_name);
+	}
+	free(extent_path);
+	closedir(dir);
+}
+
+static void cxl_extents_init(struct cxl_region *region)
+{
+	const char *devname = cxl_region_get_devname(region);
+	struct cxl_ctx *ctx = cxl_region_get_ctx(region);
+	char *group_path, *dax_region_path;
+	struct dirent *de;
+	DIR *dir;
+
+	if (region->extents_init)
+		return;
+	region->extents_init = 1;
+
+	dax_region_path = calloc(1, strlen(region->dev_path) + 64);
+	if (!dax_region_path) {
+		err(ctx, "%s: allocation failure\n", devname);
+		return;
+	}
+
+	group_path = calloc(1, strlen(region->dev_path) + 100);
+	if (!group_path) {
+		err(ctx, "%s: allocation failure\n", devname);
+		free(dax_region_path);
+		return;
+	}
+
+	sprintf(dax_region_path, "%s/dax_region%d",
+		region->dev_path, region->id);
+	dir = opendir(dax_region_path);
+	if (!dir) {
+		err(ctx, "no extents found (%s): %s\n",
+			strerror(errno), dax_region_path);
+		free(group_path);
+		free(dax_region_path);
+		return;
+	}
+
+	/* Extents sit under their allocation: tag_groupX.Y, or untagged */
+	while ((de = readdir(dir)) != NULL) {
+		int id, region_id;
+
+		if (strcmp(de->d_name, "untagged") &&
+		    sscanf(de->d_name, "tag_group%d.%d", &region_id, &id) != 2)
+			continue;
+
+		sprintf(group_path, "%s/%s", dax_region_path, de->d_name);
+		cxl_extents_add_group(region, group_path);
+	}
+	free(group_path);
+	free(dax_region_path);
+	closedir(dir);
+}
+
+CXL_EXPORT struct cxl_region_extent *
+cxl_extent_get_first(struct cxl_region *region)
+{
+	cxl_extents_init(region);
+
+	return list_top(&region->extents, struct cxl_region_extent, list);
+}
+
+CXL_EXPORT struct cxl_region_extent *
+cxl_extent_get_next(struct cxl_region_extent *extent)
+{
+	struct cxl_region *region = extent->region;
+
+	return list_next(&region->extents, extent, list);
+}
+
+CXL_EXPORT unsigned long long
+cxl_extent_get_offset(struct cxl_region_extent *extent)
+{
+	return extent->offset;
+}
+
+CXL_EXPORT unsigned long long
+cxl_extent_get_length(struct cxl_region_extent *extent)
+{
+	return extent->length;
+}
+
+CXL_EXPORT void
+cxl_extent_get_uuid(struct cxl_region_extent *extent, uuid_t uuid)
+{
+	memcpy(uuid, extent->uuid, sizeof(uuid_t));
+}
+
+/* The device-assigned Shared Extent Sequence, or -1 off a sharable partition */
+CXL_EXPORT int
+cxl_extent_get_shared_extent_seq(struct cxl_region_extent *extent)
+{
+	return extent->shared_extent_seq;
 }
 
 CXL_EXPORT struct cxl_decoder *
