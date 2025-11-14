@@ -497,7 +497,7 @@ static int validate_decoder(struct cxl_decoder *decoder,
 		}
 		break;
 	case CXL_DECODER_MODE_DYNAMIC_RAM_0...CXL_DECODER_MODE_DYNAMIC_RAM_7:
-		if (!cxl_decoder_is_dynamic_ram_capable(decoder, p->mode)) {
+		if (!cxl_decoder_is_dynamic_ram_capable(decoder, p->mode - CXL_DECODER_MODE_DYNAMIC_RAM_0)) {
 			log_err(&rl, "%s is not dynamic_ram_%d capable\n",
 	   devname, p->mode - CXL_DECODER_MODE_DYNAMIC_RAM_0);
 			return -EINVAL;
