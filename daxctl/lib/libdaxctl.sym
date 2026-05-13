@@ -113,3 +113,8 @@ global:
 	daxctl_dev_get_mode;
 	daxctl_dev_is_system_ram_mode;
 } LIBDAXCTL_10;
+
+LIBDAXCTL_12 {
+global:
+	daxctl_dev_set_uuid;
+} LIBDAXCTL_11;

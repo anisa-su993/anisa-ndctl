@@ -1166,6 +1166,59 @@ DAXCTL_EXPORT int daxctl_dev_set_size(struct daxctl_dev *dev, unsigned long long
 	return 0;
 }
 
+DAXCTL_EXPORT int daxctl_dev_set_uuid(struct daxctl_dev *dev, uuid_t uuid)
+{
+	struct daxctl_ctx *ctx = daxctl_dev_get_ctx(dev);
+	char buf[SYSFS_ATTR_SIZE];
+	char *path = dev->dev_buf;
+	int len = dev->buf_len;
+	int rc;
+
+	rc = snprintf(path, len, "%s/uuid", dev->dev_path);
+	if (rc < 0)
+		return rc;
+	if (rc >= len) {
+		err(ctx, "%s: buffer too small!\n",
+				daxctl_dev_get_devname(dev));
+		return -ENXIO;
+	}
+
+	if (uuid_is_null(uuid))
+		sprintf(buf, "0\n");
+	else
+		uuid_unparse(uuid, buf);
+
+	rc = sysfs_write_attr(ctx, path, buf);
+	if (rc < 0) {
+		err(ctx, "%s: failed to set uuid\n",
+				daxctl_dev_get_devname(dev));
+		return rc;
+	}
+
+	/*
+	 * On a DC dax region the kernel populates the device size as a
+	 * side effect of claiming the matching dax_resource(s); refresh
+	 * the cached size so callers see the post-claim value.
+	 */
+	rc = snprintf(path, len, "%s/size", dev->dev_path);
+	if (rc < 0)
+		return rc;
+	if (rc >= len) {
+		err(ctx, "%s: buffer too small!\n",
+				daxctl_dev_get_devname(dev));
+		return -ENXIO;
+	}
+	rc = sysfs_read_attr(ctx, path, buf);
+	if (rc < 0) {
+		err(ctx, "%s: failed to read back size\n",
+				daxctl_dev_get_devname(dev));
+		return rc;
+	}
+	dev->size = strtoull(buf, NULL, 0);
+
+	return 0;
+}
+
 DAXCTL_EXPORT unsigned long daxctl_dev_get_align(struct daxctl_dev *dev)
 {
 	return dev->align;
