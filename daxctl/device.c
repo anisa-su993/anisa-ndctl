@@ -30,6 +30,7 @@ static struct {
 	const char *size;
 	const char *align;
 	const char *input;
+	const char *uuid;
 	bool check_config;
 	bool no_online;
 	bool no_movable;
@@ -85,7 +86,9 @@ OPT_BOOLEAN('C', "check-config", &param.check_config, \
 #define CREATE_OPTIONS() \
 OPT_STRING('s', "size", &param.size, "size", "size to switch the device to"), \
 OPT_STRING('a', "align", &param.align, "align", "alignment to switch the device to"), \
-OPT_STRING('\0', "input", &param.input, "input", "input device JSON file")
+OPT_STRING('\0', "input", &param.input, "input", "input device JSON file"), \
+OPT_STRING('\0', "uuid", &param.uuid, "uuid", \
+	"claim sparse dax_resource(s) matching this uuid (\"0\" for untagged)")
 
 #define DESTROY_OPTIONS() \
 OPT_BOOLEAN('f', "force", &param.force, \
@@ -808,6 +811,22 @@ static int do_create(struct daxctl_region *region, long long val,
 	struct daxctl_dev *dev;
 	int i, rc = 0;
 	long long alloc = 0;
+	uuid_t uuid;
+
+	if (param.uuid) {
+		if (param.size) {
+			fprintf(stderr,
+				"--uuid and --size are mutually exclusive\n");
+			return -EINVAL;
+		}
+		if (strcmp(param.uuid, "0") == 0) {
+			uuid_clear(uuid);
+		} else if (uuid_parse(param.uuid, uuid) < 0) {
+			fprintf(stderr, "failed to parse uuid '%s'\n",
+				param.uuid);
+			return -EINVAL;
+		}
+	}
 
 	if (daxctl_region_create_dev(region))
 		return -ENOSPC;
@@ -816,33 +835,46 @@ static int do_create(struct daxctl_region *region, long long val,
 	if (!dev)
 		return -ENOSPC;
 
-	if (val == -1)
-		val = daxctl_region_get_available_size(region);
-
-	if (val <= 0)
-		return -ENOSPC;
-
 	if (align > 0) {
 		rc = daxctl_dev_set_align(dev, align);
 		if (rc < 0)
 			return rc;
 	}
 
-	/* @maps is ordered by page_offset */
-	for (i = 0; i < nmaps; i++) {
-		rc = daxctl_dev_set_mapping(dev, maps[i].start, maps[i].end);
-		if (rc < 0)
+	if (param.uuid) {
+		rc = daxctl_dev_set_uuid(dev, uuid);
+		if (rc < 0) {
+			fprintf(stderr,
+				"%s: failed to claim uuid '%s': %s\n",
+				daxctl_dev_get_devname(dev), param.uuid,
+				strerror(-rc));
 			return rc;
-		alloc += (maps[i].end - maps[i].start + 1);
-	}
-
-	if (nmaps > 0 && val > 0 && alloc != val) {
-		fprintf(stderr, "%s: allocated %lld but specified size %lld\n",
-			daxctl_dev_get_devname(dev), alloc, val);
+		}
 	} else {
-		rc = daxctl_dev_set_size(dev, val);
-		if (rc < 0)
-			return rc;
+		if (val == -1)
+			val = daxctl_region_get_available_size(region);
+
+		if (val <= 0)
+			return -ENOSPC;
+
+		/* @maps is ordered by page_offset */
+		for (i = 0; i < nmaps; i++) {
+			rc = daxctl_dev_set_mapping(dev, maps[i].start,
+						    maps[i].end);
+			if (rc < 0)
+				return rc;
+			alloc += (maps[i].end - maps[i].start + 1);
+		}
+
+		if (nmaps > 0 && val > 0 && alloc != val) {
+			fprintf(stderr,
+				"%s: allocated %lld but specified size %lld\n",
+				daxctl_dev_get_devname(dev), alloc, val);
+		} else {
+			rc = daxctl_dev_set_size(dev, val);
+			if (rc < 0)
+				return rc;
+		}
 	}
 
 	rc = daxctl_dev_enable_devdax(dev);
