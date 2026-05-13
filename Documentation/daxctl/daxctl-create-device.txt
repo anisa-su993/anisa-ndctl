@@ -82,6 +82,18 @@ include::region-option.txt[]
 
 	The size must be a multiple of the region alignment.
 
+	Mutually exclusive with --uuid.
+
+--uuid=::
+	For dax devices on DC dax regions, claim dax_resource(s) whose
+	tag matches the given UUID.  The device's size is determined by the
+	claimed capacity, so --uuid cannot be combined with --size.
+
+	A non-null UUID claims every matching dax_resource in the parent
+	region.  The value "0" is shorthand for the null UUID and claims a
+	single untagged dax_resource.  A write that matches no dax_resource
+	fails with ENOENT and the device is left at size 0.
+
 -a::
 --align::
 	Applications that want to establish dax memory mappings with
