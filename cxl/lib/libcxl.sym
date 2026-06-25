@@ -320,3 +320,11 @@ LIBCXL_12 {
 global:
 	cxl_region_locked_state;
 } LIBCXL_11;
+
+LIBCXL_13 {
+global:
+	cxl_memdev_get_dynamic_ram_1_size;
+	cxl_memdev_get_dynamic_ram_1_qos_class;
+	cxl_decoder_is_dynamic_ram_1_capable;
+	cxl_decoder_create_dynamic_ram_1_region;
+} LIBCXL_12;
