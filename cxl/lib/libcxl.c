@@ -2750,7 +2750,7 @@ static void *add_cxl_decoder(void *parent, int id, const char *cxldecoder_base)
 			{ "cap_type3", &decoder->mem_capable },
 			{ "cap_ram", &decoder->volatile_capable },
 			{ "cap_pmem", &decoder->pmem_capable },
-			{ "cap_dynamic_ram_1", &decoder->dynamic_ram_capable },
+			{ "cap_dynamic_ram", &decoder->dynamic_ram_capable },
 			{ "locked", &decoder->locked },
 		};
 
@@ -3135,7 +3135,7 @@ static struct cxl_region *cxl_decoder_create_region(struct cxl_decoder *decoder,
 	else if (mode == CXL_DECODER_MODE_RAM)
 		sprintf(path, "%s/create_ram_region", decoder->dev_path);
 	else if (mode == CXL_DECODER_MODE_DYNAMIC_RAM)
-		sprintf(path, "%s/create_dynamic_ram_1_region", decoder->dev_path);
+		sprintf(path, "%s/create_dynamic_ram_region", decoder->dev_path);
 
 	rc = sysfs_read_attr(ctx, path, buf);
 	if (rc < 0) {

@@ -239,7 +239,8 @@ cxl_decoder_mode_from_ident(const char *ident)
 		return CXL_DECODER_MODE_RAM;
 	else if (strcmp(ident, "pmem") == 0)
 		return CXL_DECODER_MODE_PMEM;
-	else if (strcmp(ident, "dynamic_ram") == 0)
+	/* region mode: "dynamic_ram" plus optional _shared / _ro suffixes */
+	else if (strncmp(ident, "dynamic_ram", strlen("dynamic_ram")) == 0)
 		return CXL_DECODER_MODE_DYNAMIC_RAM;
 	return CXL_DECODER_MODE_NONE;
 }
