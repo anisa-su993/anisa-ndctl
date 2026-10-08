@@ -172,14 +172,29 @@ inject_shared_extent()
 	echo ${cmd} > "${dev_path}/${device}/dc_inject_shared_extent"
 }
 
+# remove_extent <device> <dpa> <length> <tag> [more] [seq]
+#
+# A tag group is released as a whole, so releasing a multi-extent group
+# takes a More-chain: every record but the last with "more" set.  On the
+# sharable memdev the release record must also carry the extent's seq.
 remove_extent()
 {
 	local device="$1"
 	local dpa="$2"
 	local length="$3"
 	local tag="$4"
+	local more="0"
+	local cmd
 
-	echo ${dpa}:${length}:${tag} > "${dev_path}/${device}/dc_del_extent"
+	if [ "$5" != "" ]; then
+		more="1"
+	fi
+	cmd="${dpa}:${length}:${tag}:${more}"
+	if [ "$6" != "" ]; then
+		cmd="${cmd}:$6"
+	fi
+
+	echo ${cmd} > "${dev_path}/${device}/dc_del_extent"
 }
 
 create_dax_dev()
@@ -450,9 +465,10 @@ test_remove_extents_in_use()
 	echo ""
 	echo "Test: Remove extents under DC dax device"
 	echo ""
-	# Tagged release events are deferred while a dax device pins the
-	# tag group; extent count stays at 2.
-	remove_extent ${device} $base_ext_dpa $base_ext_length "$test_tag_a"
+	# The group is released as one More-chain.  The first record only
+	# stages; the closing record validates the chain, but the dax device
+	# pins the tag group so the release is deferred: count stays at 2.
+	remove_extent ${device} $base_ext_dpa $base_ext_length "$test_tag_a" 1
 	check_extent_cnt ${region} 2
 	remove_extent ${device} $pre_ext_dpa $pre_ext_length "$test_tag_a"
 	check_extent_cnt ${region} 2
@@ -501,7 +517,7 @@ test_create_dax_dev_spanning_two_extents()
 	# In-use extents were not released.  Check they can be removed after
 	# the dax device is removed.
 	check_extent_cnt ${region} 2
-	remove_extent ${device} $base_ext_dpa $base_ext_length "$test_tag_a"
+	remove_extent ${device} $base_ext_dpa $base_ext_length "$test_tag_a" 1
 	remove_extent ${device} $pre_ext_dpa $pre_ext_length "$test_tag_a"
 	check_extent_cnt ${region} 0
 	destroy_region ${region}
@@ -628,7 +644,7 @@ test_uuid_aggregation()
 	check_dax_dev ${dax_dev} $expected
 
 	destroy_dax_dev ${dax_dev}
-	remove_extent ${device} $base_ext_dpa $base_ext_length "$test_tag_a"
+	remove_extent ${device} $base_ext_dpa $base_ext_length "$test_tag_a" 1
 	remove_extent ${device} $pre_ext_dpa $pre_ext_length "$test_tag_a"
 	destroy_region ${region}
 	check_not_region ${region}
@@ -722,13 +738,16 @@ test_multiple_extent_remove ()
 
 	# |         | daxX.1 |          | daxX.1            |   tag_a       |
 
-	# A release event addressed at any DPA inside the tag group releases
-	# the whole group atomically.  Use base_ext_dpa so the kernel finds
-	# the tag group's region_extent on that DPA.
-	echo "Issuing tag-group release at $base_ext_dpa"
+	# A release naming only one extent of a two-extent group is refused:
+	# a release must name the whole group.  Nothing is torn down.
+	echo "Issuing single-extent release at $base_ext_dpa"
 	remove_extent ${device} $base_ext_dpa $base_ext_length "$test_tag_a"
+	check_extent_cnt ${region} 2
 
-	# In-use extents are not released (dax-layer EBUSY defer).
+	# The whole group in one More-chain is accepted but deferred while
+	# the dax device holds it (dax-layer EBUSY).
+	remove_extent ${device} $base_ext_dpa $base_ext_length "$test_tag_a" 1
+	remove_extent ${device} $pre_ext_dpa $pre_ext_length "$test_tag_a"
 	check_extent_cnt ${region} 2
 
 	destroy_dax_dev ${dax_dev}
@@ -738,9 +757,9 @@ test_multiple_extent_remove ()
 	# |         |--------|          |-------------------|               |
 	# |         | (base) |          | (pre)-existing    |               |
 
-	# Now that the dax dev is gone, re-issue the release(s) for each
-	# extent.  Each release event targets the containing region_extent.
-	remove_extent ${device} $base_ext_dpa $base_ext_length "$test_tag_a"
+	# Now that the dax dev is gone, re-issue the release as a chain
+	# naming the whole group.
+	remove_extent ${device} $base_ext_dpa $base_ext_length "$test_tag_a" 1
 	remove_extent ${device} $pre_ext_dpa $pre_ext_length "$test_tag_a"
 	check_extent_cnt ${region} 0
 
@@ -1116,8 +1135,8 @@ test_shared_extent_inject()
 	check_dax_dev ${dax_dev} $expected
 
 	destroy_dax_dev ${dax_dev}
-	remove_extent ${sharable_device} $base_ext_dpa $base_ext_length "$test_tag_b"
-	remove_extent ${sharable_device} $pre_ext_dpa $pre_ext_length "$test_tag_b"
+	remove_extent ${sharable_device} $base_ext_dpa $base_ext_length "$test_tag_b" 1 0
+	remove_extent ${sharable_device} $pre_ext_dpa $pre_ext_length "$test_tag_b" "" 1
 	destroy_region ${region}
 	check_not_region ${region}
 }
@@ -1144,8 +1163,8 @@ test_seq_integrity_gap()
 
 	if [ "$(jq -r '.[].extents | length' <($CXL list -r ${region} -N))" = "2" ]; then
 		fail_create_dax_dev_with_uuid ${region} "$test_tag_b"
-		remove_extent ${sharable_device} $base_ext_dpa $base_ext_length "$test_tag_b"
-		remove_extent ${sharable_device} $pre_ext_dpa $pre_ext_length "$test_tag_b"
+		remove_extent ${sharable_device} $base_ext_dpa $base_ext_length "$test_tag_b" 1 0
+		remove_extent ${sharable_device} $pre_ext_dpa $pre_ext_length "$test_tag_b" "" 2
 	fi
 	check_extent_cnt ${region} 0
 	destroy_region ${region}
