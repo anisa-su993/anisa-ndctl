@@ -939,6 +939,91 @@ test_reject_overlapping ()
 	check_not_region ${region}
 }
 
+# A tag group is one allocation: an extent that fails a per-extent gate
+# (here, overlap with accepted capacity) drops its whole group, not just
+# itself.  CXL r4.0 8.2.10.9.9.3 requires all-or-none for sharable
+# capacity; the host applies the same rule to every tagged group.
+test_group_all_or_nothing()
+{
+	echo ""
+	echo "Test: per-extent failure drops the whole tag group"
+	echo ""
+
+	region=$(create_dcd_region ${mem} ${decoder})
+	check_region ${region} ${dra_size}
+
+	inject_extent ${device} $pre_ext_dpa $pre_ext_length ""
+	check_extent_cnt ${region} 1
+
+	# | 2G non- |      DC region                                        |
+	# |  DC cap |                                                       |
+	# |  ...    |-------------------------------------------------------|
+	# |         |--------|          |---------|---------|               |
+	# |         | (base) |          |(pre-ext)| overlap |    tag_a      |
+	#
+	# One tagged More-chain: base is fine on its own, the closing record
+	# overlaps pre-ext.  The group is refused whole, so base must not
+	# surface either.
+	partial_ext_dpa="$(($pre_ext_dpa + ($pre_ext_length / 2)))"
+	inject_extent ${device} $base_ext_dpa $base_ext_length "$test_tag_a" 1
+	check_extent_cnt ${region} 1
+	inject_extent ${device} $partial_ext_dpa $pre_ext_length "$test_tag_a"
+	check_extent_cnt ${region} 1
+	check_extent ${region} ${pre_ext_offset} ${pre_ext_length}
+
+	# A refused group was never committed, so the tag is still free:
+	# the same extent offered on its own is accepted and claimable.
+	inject_extent ${device} $base_ext_dpa $base_ext_length "$test_tag_a"
+	check_extent_cnt ${region} 2
+	check_extent ${region} ${base_ext_offset} ${base_ext_length}
+	dax_dev=$(create_dax_dev_with_uuid ${region} "$test_tag_a")
+	check_dax_dev ${dax_dev} $base_ext_length
+
+	destroy_dax_dev ${dax_dev}
+	remove_extent ${device} $base_ext_dpa $base_ext_length "$test_tag_a"
+	remove_extent ${device} $pre_ext_dpa $pre_ext_length ""
+	check_extent_cnt ${region} 0
+	destroy_region ${region}
+	check_not_region ${region}
+}
+
+# Same on the sharable memdev, where the spec mandates it: a sharable
+# group acknowledged with a subset is an Invalid Extent List.
+test_shared_group_all_or_nothing()
+{
+	echo ""
+	echo "Test: sharable group with one bad extent is refused whole"
+	echo ""
+
+	region=$(create_dcd_region ${sharable_mem} ${sharable_decoder})
+	check_region ${region} ${sharable_dra_size}
+
+	inject_shared_extent ${sharable_device} $pre_ext_dpa $pre_ext_length \
+		"$test_tag_b" "" 0
+	check_extent_cnt ${region} 1
+
+	# seq 0 is fine, seq 1 overlaps the accepted tag_b extent: the
+	# whole tag_a group is refused.
+	partial_ext_dpa="$(($pre_ext_dpa + ($pre_ext_length / 2)))"
+	inject_shared_extent ${sharable_device} $base_ext_dpa $base_ext_length \
+		"$test_tag_a" 1 0
+	check_extent_cnt ${region} 1
+	inject_shared_extent ${sharable_device} $partial_ext_dpa $pre_ext_length \
+		"$test_tag_a" "" 1
+	check_extent_cnt ${region} 1
+
+	# tag_a was never committed: the good extent alone is accepted.
+	inject_shared_extent ${sharable_device} $base_ext_dpa $base_ext_length \
+		"$test_tag_a" "" 0
+	check_extent_cnt ${region} 2
+
+	remove_extent ${sharable_device} $base_ext_dpa $base_ext_length "$test_tag_a" "" 0
+	remove_extent ${sharable_device} $pre_ext_dpa $pre_ext_length "$test_tag_b" "" 0
+	check_extent_cnt ${region} 0
+	destroy_region ${region}
+	check_not_region ${region}
+}
+
 test_two_regions()
 {
 	echo ""
@@ -1318,6 +1403,8 @@ test_destroy_region_without_extent_removal
 test_destroy_with_extent_and_dax
 test_dax_device_ops
 test_reject_overlapping
+test_group_all_or_nothing
+test_shared_group_all_or_nothing
 test_two_regions
 test_more_bit
 test_driver_reload
