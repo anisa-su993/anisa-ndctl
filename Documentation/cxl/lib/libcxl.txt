@@ -75,6 +75,8 @@ int cxl_memdev_get_minor(struct cxl_memdev *memdev);
 unsigned long long cxl_memdev_get_pmem_size(struct cxl_memdev *memdev);
 unsigned long long cxl_memdev_get_ram_size(struct cxl_memdev *memdev);
 unsigned long long cxl_memdev_get_dynamic_ram_1_size(struct cxl_memdev *memdev);
+bool cxl_memdev_is_dynamic_ram_1_shareable(struct cxl_memdev *memdev);
+bool cxl_memdev_is_dynamic_ram_1_read_only(struct cxl_memdev *memdev);
 const char *cxl_memdev_get_firmware_version(struct cxl_memdev *memdev);
 size_t cxl_memdev_get_label_size(struct cxl_memdev *memdev);
 int cxl_memdev_nvdimm_bridge_active(struct cxl_memdev *memdev);
@@ -96,7 +98,9 @@ cxl_memdev_get_{major,minor}().
 
 The 'pmem_size', 'ram_size', and 'dynamic_ram_1_size' attributes return the
 current provisioning of DPA (Device Physical Address / local capacity) in the
-device.
+device.  cxl_memdev_is_dynamic_ram_1_{shareable,read_only}() report the
+properties of the Dynamic Capacity partition, which select the kind of DC
+region its decoders can join.
 
 cxl_memdev_get_numa_node() returns the affinitized CPU node number if
 available or -1 otherwise.

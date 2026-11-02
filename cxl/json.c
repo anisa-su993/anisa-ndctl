@@ -632,6 +632,16 @@ struct json_object *util_cxl_memdev_to_json(struct cxl_memdev *memdev,
 			if (jobj)
 				json_object_object_add(jdev, "dynamic_ram_1_qos_class", jobj);
 		}
+
+		jobj = json_object_new_boolean(
+			cxl_memdev_is_dynamic_ram_1_shareable(memdev));
+		if (jobj)
+			json_object_object_add(jdev, "dynamic_ram_1_shareable", jobj);
+
+		jobj = json_object_new_boolean(
+			cxl_memdev_is_dynamic_ram_1_read_only(memdev));
+		if (jobj)
+			json_object_object_add(jdev, "dynamic_ram_1_read_only", jobj);
 	}
 
 	if (flags & UTIL_JSON_HEALTH) {

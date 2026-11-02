@@ -56,6 +56,8 @@ struct cxl_memdev {
 	int ram_qos_class;
 	int pmem_qos_class;
 	int dynamic_ram_1_qos_class;
+	bool dynamic_ram_1_shareable;
+	bool dynamic_ram_1_read_only;
 	int payload_max;
 	size_t lsa_size;
 	struct kmod_module *module;

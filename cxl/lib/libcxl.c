@@ -1629,6 +1629,14 @@ static void *add_cxl_memdev(void *parent, int id, const char *cxlmem_base)
 	if (sysfs_read_attr(ctx, path, buf) == 0)
 		memdev->dynamic_ram_1_size = strtoull(buf, NULL, 0);
 
+	sprintf(path, "%s/dynamic_ram_1/shareable", cxlmem_base);
+	if (sysfs_read_attr(ctx, path, buf) == 0)
+		memdev->dynamic_ram_1_shareable = !!strtoul(buf, NULL, 0);
+
+	sprintf(path, "%s/dynamic_ram_1/read_only", cxlmem_base);
+	if (sysfs_read_attr(ctx, path, buf) == 0)
+		memdev->dynamic_ram_1_read_only = !!strtoul(buf, NULL, 0);
+
 	sprintf(path, "%s/pmem/qos_class", cxlmem_base);
 	if (sysfs_read_attr(ctx, path, buf) < 0)
 		memdev->pmem_qos_class = CXL_QOS_CLASS_NONE;
@@ -1912,6 +1920,31 @@ CXL_EXPORT int cxl_memdev_get_ram_qos_class(struct cxl_memdev *memdev)
 CXL_EXPORT int cxl_memdev_get_dynamic_ram_1_qos_class(struct cxl_memdev *memdev)
 {
 	return memdev->dynamic_ram_1_qos_class;
+}
+
+CXL_EXPORT bool cxl_memdev_is_dynamic_ram_1_shareable(struct cxl_memdev *memdev)
+{
+	return memdev->dynamic_ram_1_shareable;
+}
+
+CXL_EXPORT bool cxl_memdev_is_dynamic_ram_1_read_only(struct cxl_memdev *memdev)
+{
+	return memdev->dynamic_ram_1_read_only;
+}
+
+/*
+ * The kernel names one kind of DC partition per selector: 'dynamic_ram'
+ * plus '_shared' and/or '_ro' for the partition's CDAT properties.
+ */
+static const char *cxl_dc_selector(bool shareable, bool read_only)
+{
+	if (shareable && read_only)
+		return "dynamic_ram_shared_ro";
+	if (shareable)
+		return "dynamic_ram_shared";
+	if (read_only)
+		return "dynamic_ram_ro";
+	return "dynamic_ram";
 }
 
 CXL_EXPORT const char *cxl_memdev_get_firmware_verison(struct cxl_memdev *memdev)
@@ -2684,7 +2717,7 @@ static void *add_cxl_decoder(void *parent, int id, const char *cxldecoder_base)
 			decoder->mode = CXL_DECODER_MODE_MIXED;
 		else if (strcmp(buf, "none") == 0)
 			decoder->mode = CXL_DECODER_MODE_NONE;
-		else if (strcmp(buf, "dynamic_ram_1") == 0)
+		else if (strncmp(buf, "dynamic_ram", strlen("dynamic_ram")) == 0)
 			decoder->mode = CXL_DECODER_MODE_DYNAMIC_RAM;
 		else
 			decoder->mode = CXL_DECODER_MODE_MIXED;
@@ -2750,7 +2783,6 @@ static void *add_cxl_decoder(void *parent, int id, const char *cxldecoder_base)
 			{ "cap_type3", &decoder->mem_capable },
 			{ "cap_ram", &decoder->volatile_capable },
 			{ "cap_pmem", &decoder->pmem_capable },
-			{ "cap_dynamic_ram", &decoder->dynamic_ram_capable },
 			{ "locked", &decoder->locked },
 		};
 
@@ -2761,6 +2793,13 @@ static void *add_cxl_decoder(void *parent, int id, const char *cxldecoder_base)
 			if (sysfs_read_attr(ctx, path, buf) == 0)
 				*(flag->flag) = !!strtoul(buf, NULL, 0);
 		}
+		/*
+		 * A DC region needs a volatile window and a kernel with DCD
+		 * support, which is what the dynamic_ram create file shows.
+		 */
+		sprintf(path, "%s/create_dynamic_ram_region", cxldecoder_base);
+		decoder->dynamic_ram_capable = decoder->volatile_capable &&
+						 access(path, F_OK) == 0;
 		decoder->max_available_extent =
 			cxl_decoder_calc_max_available_extent(decoder);
 		break;
@@ -3001,9 +3040,16 @@ CXL_EXPORT int cxl_decoder_set_mode(struct cxl_decoder *decoder,
 	case CXL_DECODER_MODE_RAM:
 		sprintf(buf, "ram");
 		break;
-	case CXL_DECODER_MODE_DYNAMIC_RAM:
-		sprintf(buf, "dynamic_ram_1");
+	case CXL_DECODER_MODE_DYNAMIC_RAM: {
+		struct cxl_endpoint *ep = cxl_port_to_endpoint(port);
+		struct cxl_memdev *memdev = ep ? cxl_endpoint_get_memdev(ep) : NULL;
+		bool shareable = memdev && memdev->dynamic_ram_1_shareable;
+		bool read_only = memdev && memdev->dynamic_ram_1_read_only;
+
+		/* Point the decoder at the memdev's kind of DC partition */
+		sprintf(buf, "%s", cxl_dc_selector(shareable, read_only));
 		break;
+	}
 	default:
 		err(ctx, "%s: unsupported mode: %d\n",
 		    cxl_decoder_get_devname(decoder), mode);
@@ -3122,7 +3168,8 @@ cxl_decoder_get_region(struct cxl_decoder *decoder)
 }
 
 static struct cxl_region *cxl_decoder_create_region(struct cxl_decoder *decoder,
-						    enum cxl_decoder_mode mode)
+						    enum cxl_decoder_mode mode,
+						    bool shareable, bool read_only)
 {
 	struct cxl_ctx *ctx = cxl_decoder_get_ctx(decoder);
 	char *path = decoder->dev_buf;
@@ -3135,7 +3182,8 @@ static struct cxl_region *cxl_decoder_create_region(struct cxl_decoder *decoder,
 	else if (mode == CXL_DECODER_MODE_RAM)
 		sprintf(path, "%s/create_ram_region", decoder->dev_path);
 	else if (mode == CXL_DECODER_MODE_DYNAMIC_RAM)
-		sprintf(path, "%s/create_dynamic_ram_region", decoder->dev_path);
+		sprintf(path, "%s/create_%s_region", decoder->dev_path,
+			cxl_dc_selector(shareable, read_only));
 
 	rc = sysfs_read_attr(ctx, path, buf);
 	if (rc < 0) {
@@ -3178,19 +3226,23 @@ static struct cxl_region *cxl_decoder_create_region(struct cxl_decoder *decoder,
 CXL_EXPORT struct cxl_region *
 cxl_decoder_create_pmem_region(struct cxl_decoder *decoder)
 {
-	return cxl_decoder_create_region(decoder, CXL_DECODER_MODE_PMEM);
+	return cxl_decoder_create_region(decoder, CXL_DECODER_MODE_PMEM, false,
+					 false);
 }
 
 CXL_EXPORT struct cxl_region *
 cxl_decoder_create_ram_region(struct cxl_decoder *decoder)
 {
-	return cxl_decoder_create_region(decoder, CXL_DECODER_MODE_RAM);
+	return cxl_decoder_create_region(decoder, CXL_DECODER_MODE_RAM, false,
+					 false);
 }
 
 CXL_EXPORT struct cxl_region *
-cxl_decoder_create_dynamic_ram_region(struct cxl_decoder *decoder)
+cxl_decoder_create_dynamic_ram_region(struct cxl_decoder *decoder,
+				      bool shareable, bool read_only)
 {
-	return cxl_decoder_create_region(decoder, CXL_DECODER_MODE_DYNAMIC_RAM);
+	return cxl_decoder_create_region(decoder, CXL_DECODER_MODE_DYNAMIC_RAM,
+					 shareable, read_only);
 }
 
 CXL_EXPORT int cxl_decoder_get_nr_targets(struct cxl_decoder *decoder)

@@ -714,7 +714,32 @@ static int create_region(struct cxl_ctx *ctx, int *count,
 			return -ENXIO;
 		}
 	} else if (p->mode == CXL_DECODER_MODE_DYNAMIC_RAM) {
-		region = cxl_decoder_create_dynamic_ram_region(p->root_decoder);
+		bool shareable = false, read_only = false;
+
+		/*
+		 * A DC region is created for one kind of partition (shared
+		 * and/or read-only); every target must carry that kind.
+		 */
+		for (i = 0; i < p->ways; i++) {
+			struct json_object *jobj =
+				json_object_array_get_idx(p->memdevs, i);
+			struct cxl_memdev *memdev = json_object_get_userdata(jobj);
+			bool s = cxl_memdev_is_dynamic_ram_1_shareable(memdev);
+			bool r = cxl_memdev_is_dynamic_ram_1_read_only(memdev);
+
+			if (i == 0) {
+				shareable = s;
+				read_only = r;
+			} else if (s != shareable || r != read_only) {
+				log_err(&rl, "%s: dynamic_ram_1 partition kind differs from the first target\n",
+					cxl_memdev_get_devname(memdev));
+				return -EINVAL;
+			}
+		}
+
+		region = cxl_decoder_create_dynamic_ram_region(p->root_decoder,
+							       shareable,
+							       read_only);
 		if (!region) {
 			log_err(&rl, "failed to create region under %s\n",
 				param.root_decoder);
