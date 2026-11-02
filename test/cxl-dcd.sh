@@ -338,6 +338,20 @@ check_not_dax_dev()
 	fi
 }
 
+# wait for dax_cxl to bind the region's dax_region device
+wait_dax_region_probe()
+{
+	local drv="/sys/bus/cxl/devices/dax_region${1#region}/driver"
+	local i
+
+	for i in $(seq 100); do
+		[ -e "$drv" ] && return 0
+		sleep 0.1
+	done
+	echo "FAIL dax_region${1#region} did not probe"
+	err "$LINENO"
+}
+
 check_extent()
 {
 	local region=$1
@@ -1120,13 +1134,18 @@ test_driver_bring_up()
 {
 	# leave region up, driver removed.
 	echo ""
-	echo "Test: no driver inject ok"
+	echo "Test: no driver inject refused"
 	echo ""
 	check_region ${region} ${dra_size}
+	# No dax driver bound: the add is refused, not held for a later probe
 	inject_extent ${device} $pre_ext_dpa $pre_ext_length ""
-	check_extent_cnt ${region} 1
+	check_extent_cnt ${region} 0
 
+	# The driver registers from a workqueue and probes asynchronously;
+	# wait for the probe before offering the extent again.
 	modprobe dax_cxl
+	wait_dax_region_probe ${region}
+	inject_extent ${device} $pre_ext_dpa $pre_ext_length ""
 	check_extent_cnt ${region} 1
 
 	destroy_region ${region}
