@@ -943,6 +943,49 @@ test_reject_overlapping ()
 # (here, overlap with accepted capacity) drops its whole group, not just
 # itself.  CXL r4.0 8.2.10.9.9.3 requires all-or-none for sharable
 # capacity; the host applies the same rule to every tagged group.
+# A chain that re-offers capacity the host already accepted is dropped
+# whole: CXL r4.0 8.2.10.9.9.3 makes an Add response naming a DPA range
+# already added Invalid Physical Address, and a tag group is one
+# allocation.
+test_reject_duplicate()
+{
+	echo ""
+	echo "Test: re-offered accepted capacity drops the group"
+	echo ""
+
+	region=$(create_dcd_region ${mem} ${decoder})
+	check_region ${region} ${dra_size}
+	inject_extent ${device} $pre_ext_dpa $pre_ext_length ""
+	check_extent_cnt ${region} 1
+
+	# A range inside pre-ext.  The mock refuses a repeated start DPA, so
+	# re-offer its second quarter.
+	#
+	# |         |                   |----|----|---------|               |
+	# |         |                   |(pre-ext)| dup     |               |
+	dup_dpa=$(($pre_ext_dpa + ($pre_ext_length / 4)))
+	dup_length=$(($pre_ext_length / 4))
+
+	# Untagged: its single-extent group is dropped.
+	inject_extent ${device} $dup_dpa $dup_length ""
+	check_extent_cnt ${region} 1
+
+	# A tagged More-chain mixing a new extent with the re-offer: nothing
+	# from the chain is accepted and the tag is never committed.
+	inject_extent ${device} $base_ext_dpa $base_ext_length "$test_tag_a" 1
+	inject_extent ${device} $dup_dpa $dup_length "$test_tag_a"
+	check_extent_cnt ${region} 1
+	fail_create_dax_dev_with_uuid ${region} "$test_tag_a"
+
+	# The good extent alone is still accepted under the tag.
+	inject_extent ${device} $base_ext_dpa $base_ext_length "$test_tag_a"
+	check_extent_cnt ${region} 2
+	check_extent ${region} ${base_ext_offset} ${base_ext_length}
+
+	destroy_region ${region}
+	check_not_region ${region}
+}
+
 test_group_all_or_nothing()
 {
 	echo ""
@@ -1403,6 +1446,7 @@ test_destroy_region_without_extent_removal
 test_destroy_with_extent_and_dax
 test_dax_device_ops
 test_reject_overlapping
+test_reject_duplicate
 test_group_all_or_nothing
 test_shared_group_all_or_nothing
 test_two_regions
